@@ -1,0 +1,34 @@
+Procedure
+[x] Needle biopsy
+[ ] Fine needle aspiration
+
+Specimen Laterality
+[x] Right
+[ ] Left
+
++Tumor Site (select all that apply)
+[x] Upper outer quadrant
+[x] Clock position
+
+Specify Clock Position (select all that apply)
+[x] 2 o'clock
+[x] 3 o'clock
+
+Histologic Type
+[x] Ductal carcinoma in situ (DCIS)
+
++Architectural Patterns (select all that apply)
+[x] Comedo
+[x] Solid
+
+Nuclear Grade
+[x] Grade II (intermediate)
+
+Necrosis
+[x] Present, central (expansive "comedo" necrosis)
+
++Microcalcifications (select all that apply)
+[x] Present in DCIS
+
++Additional Findings (specify): Sclerosing adenosis
++Breast Biomarker Studies (specify pending studies): ER/PR pending
