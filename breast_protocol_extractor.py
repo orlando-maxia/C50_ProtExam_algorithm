@@ -11,6 +11,8 @@ import json
 import re
 from typing import Iterable
 
+CHECKED_PATTERNS = [r"\[x\]", r"\[X\]", r"☒", r"☑", r"✅", r"\(x\)", r"\(X\)"]
+
 
 @dataclass
 class ExtractedProtocol:
@@ -23,12 +25,12 @@ class ExtractedProtocol:
     nuclear_grade: list[str]
     necrosis: list[str]
     microcalcifications: list[str]
-    additional_findings: list[str]
-    biomarker_studies: list[str]
+    additional_findings: str | None
+    biomarker_studies: str | None
 
 
 class BreastProtocolExtractor:
-    """Extractor for CAP-like variables from narrative pathology text."""
+    """Rule-based extractor for CAP breast DCIS biopsy protocol."""
 
     field_options: dict[str, list[str]] = {
         "procedure": [
@@ -48,6 +50,7 @@ class BreastProtocolExtractor:
             "Nipple",
             "Axillary tail",
             "Clock position",
+            "Other",
             "Not specified",
         ],
         "specify_clock_position": [f"{i} o'clock" for i in range(1, 13)],
@@ -64,6 +67,7 @@ class BreastProtocolExtractor:
             "Micropapillary",
             "Papillary",
             "Solid",
+            "Other",
         ],
         "nuclear_grade": [
             "Grade I (low)",

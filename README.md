@@ -1,10 +1,6 @@
-# Breast Histopathology Structuring Algorithm (Plain Text First)
+# Breast DCIS Protocol Variable Extraction
 
-This project now focuses on **plain text pathology reports** (for example the `r.document_plain_text` field from your database), not only OCR from forms/images.
-
-## Goal
-
-Structure free-text breast histopathology reports into CAP-aligned variables:
+This repository contains a first version of a **rule-based extraction algorithm** for CAP breast protocol examinations (DCIS biopsy template), focused on these variables:
 
 - Procedure
 - Specimen laterality
@@ -46,3 +42,14 @@ python breast_protocol_extractor.py path/to/report_plain_text.txt
 - Rule-based patterns can miss uncommon phrasing.
 - Complex negations may require NLP-level parsing.
 - Biomarker extraction currently detects mentions, not final quantitative values.
+python breast_protocol_extractor.py path/to/ocr_output.txt
+```
+
+## Notes
+
+- This is a baseline algorithm to start iteration.
+- OCR quality strongly impacts extraction quality.
+- Next iteration can include:
+  - layout-aware parsing (line positions / bounding boxes)
+  - typo-tolerant matching (fuzzy matching)
+  - confidence scores per extracted variable
