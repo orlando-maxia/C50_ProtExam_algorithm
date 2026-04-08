@@ -8,10 +8,97 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 import json
+import os
 import re
-from typing import Iterable
+from typing import Iterable, Literal
+from agent_client import classify_report_type, extract_additional_findings_and_biomarkers
 
 CHECKED_PATTERNS = [r"\[x\]", r"\[X\]", r"☒", r"☑", r"✅", r"\(x\)", r"\(X\)"]
+
+AGENT_API_KEY_PATH = r"C:\\Users\\orlando.caballero\\Downloads\\oaiak2"
+
+
+def _load_openai_api_key(api_key_path: str | None = None) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return api_key
+
+    if not api_key_path:
+        raise FileNotFoundError("OPENAI_API_KEY not set and no api_key_path provided.")
+
+    candidate_paths = [api_key_path]
+    if re.match(r"^[A-Za-z]:\\", api_key_path):
+        drive = api_key_path[0].lower()
+        wsl_path = "/mnt/" + drive + "/" + api_key_path[3:].replace("\\\\", "/")
+        candidate_paths.append(wsl_path)
+
+    for path in candidate_paths:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                key = handle.read().strip()
+            if key:
+                return key
+        except OSError:
+            continue
+
+    raise FileNotFoundError("Could not read API key from the provided path(s).")
+
+
+def _response_output_text(response) -> str:
+    text = getattr(response, "output_text", None)
+    if text:
+        return text
+
+    output = getattr(response, "output", None)
+    if not output:
+        return ""
+
+    for item in output:
+        if getattr(item, "type", None) != "message":
+            continue
+        for part in getattr(item, "content", []) or []:
+            if getattr(part, "type", None) == "output_text":
+                return getattr(part, "text", "")
+
+    return ""
+
+
+class ProtocolSelectorAgent:
+    """LLM-based selector that chooses DCIS vs invasive protocol."""
+
+    def __init__(self, api_key_path: str | None = AGENT_API_KEY_PATH, model: str = "gpt-4.1") -> None:
+        from openai import OpenAI
+
+        api_key = _load_openai_api_key(api_key_path)
+        self._client = OpenAI(api_key=api_key)
+        self._model = model
+
+    def choose_protocol(self, text: str) -> Literal["dcis", "invasive"]:
+        system = (
+            "You are a pathology protocol router. Decide whether the report is for "
+            "DCIS biopsy protocol or invasive carcinoma biopsy protocol. "
+            "Return only one token: dcis or invasive."
+        )
+        clipped = text[:8000]
+        response = self._client.responses.create(
+            model=self._model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": clipped},
+            ],
+        )
+        choice = _response_output_text(response).strip().lower()
+        if "invasive" in choice:
+            return "invasive"
+        return "dcis"
+
+
+def select_extractor_with_agent(text: str, agent: ProtocolSelectorAgent | None = None):
+    agent = agent or ProtocolSelectorAgent()
+    protocol = agent.choose_protocol(text)
+    if protocol == "invasive":
+        return BreastInvasiveProtocolExtractor()
+    return BreastProtocolExtractor()
 
 
 @dataclass
@@ -28,6 +115,29 @@ class ExtractedProtocol:
     additional_findings: str | None
     biomarker_studies: str | None
 
+@dataclass
+class ExtractedInvasiveProtocol:
+    procedure: list[str]
+    specimen_laterality: list[str]
+    tumor_site: list[str]
+    specify_clock_position: list[str]
+    histologic_type: list[str]
+    histologic_grade_applicability: list[str]
+    glandular_tubular_differentiation: list[str]
+    nuclear_pleomorphism: list[str]
+    mitotic_rate: list[str]
+    overall_grade: list[str]
+    largest_invasive_focus_method: list[str]
+    dcis_status: list[str]
+    architectural_pattern: list[str]
+    dcis_nuclear_grade: list[str]
+    necrosis: list[str]
+    lymphatic_vascular_invasion: list[str]
+    microcalcifications: list[str]
+    additional_findings_status: list[str]
+    breast_biomarker_studies_status: list[str]
+    additional_findings: list[str]
+    biomarker_studies: list[str]
 
 class BreastProtocolExtractor:
     """Rule-based extractor for CAP breast DCIS biopsy protocol."""
@@ -87,6 +197,224 @@ class BreastProtocolExtractor:
             "Present in non-neoplastic tissue",
         ],
     }
+
+class BreastInvasiveProtocolExtractor:
+    """Rule-based extractor for CAP invasive carcinoma of the breast biopsy protocol."""
+
+    field_options: dict[str, list[str]] = {
+        # ---------------------------------------------------------------------
+        # 1. SPECIMEN
+        # ---------------------------------------------------------------------
+        "procedure": [
+            "Needle biopsy",
+            "Fine needle aspiration",
+            "Other",
+            "Not specified",
+        ],
+        "specimen_laterality": [
+            "Right",
+            "Left",
+            "Not specified",
+        ],
+        # ---------------------------------------------------------------------
+        # 2. TUMOR SITE
+        # ---------------------------------------------------------------------
+        "tumor_site": [
+            "Upper outer quadrant",
+            "Lower outer quadrant",
+            "Upper inner quadrant",
+            "Lower inner quadrant",
+            "Central",
+            "Nipple",
+            "Clock position",
+            "Other",
+            "Not specified",
+        ],
+        "specify_clock_position": [f"{i} o'clock" for i in range(1, 13)],
+        # ---------------------------------------------------------------------
+        # 3. HISTOLOGIC TYPE
+        # Based on the main checklist page plus the explanatory pages
+        # ---------------------------------------------------------------------
+        "histologic_type": [
+            "No residual invasive carcinoma",
+            "Invasive carcinoma of no special type (ductal)",
+            "Micro-invasive carcinoma",
+            "Invasive lobular carcinoma",
+            "Invasive carcinoma with mixed ductal and lobular features",
+            "Invasive carcinoma with mixed features",
+            "Invasive carcinoma with features of",
+            "Tubular carcinoma",
+            "Invasive cribriform carcinoma",
+            "Mucinous carcinoma",
+            "Invasive micropapillary carcinoma",
+            "Apocrine adenocarcinoma",
+            # Metaplastic carcinoma
+            "Metaplastic carcinoma",
+            "Metaplastic carcinoma NOS",
+            "Low grade adenosquamous carcinoma",
+            "Fibromatosis-like metaplastic carcinoma",
+            "Spindle cell carcinoma",
+            "Squamous cell carcinoma",
+            "Metaplastic carcinoma with mesenchymal differentiation",
+            # Papillary / special papillary types
+            "Encapsulated papillary carcinoma with invasion",
+            "Solid papillary carcinoma with invasion",
+            "Intraductal papillary adenocarcinoma with invasion",
+            "Invasive papillary carcinoma",
+            # Adenoid cystic and special salivary-gland-like types
+            "Adenoid cystic carcinoma",
+            "Classic adenoid cystic carcinoma",
+            "Solid-basaloid adenoid cystic carcinoma",
+            "Adenoid cystic carcinoma with high-grade transformation",
+            "Secretory carcinoma",
+            "Mucoepidermoid carcinoma",
+            "Polymorphous adenocarcinoma",
+            "Tall cell carcinoma with reversed polarity",
+            "Adenomyoepithelioma with carcinoma",
+            "Epithelial-myoepithelial carcinoma",
+            # Neuroendocrine
+            "Neuroendocrine tumor",
+            "Neuroendocrine tumor NOS",
+            "Neuroendocrine tumor, grade 1",
+            "Neuroendocrine tumor, grade 2",
+            "Neuroendocrine carcinoma",
+            "Neuroendocrine carcinoma NOS",
+            "Neuroendocrine carcinoma, small cell",
+            "Neuroendocrine carcinoma, large cell",
+            # Other rare histologies
+            "Oncocytic carcinoma",
+            "Lipid-rich carcinoma",
+            "Glycogen-rich carcinoma",
+            "Sebaceous carcinoma",
+            "Mucinous cystadenocarcinoma NOS",
+            "Acinar cell carcinoma",
+            # Fallback / unspecified
+            "Invasive carcinoma, type cannot be determined",
+            "Other histologic type not listed",
+        ],
+        # ---------------------------------------------------------------------
+        # 4. HISTOLOGIC GRADE (Nottingham Histologic Score)
+        # ---------------------------------------------------------------------
+        "histologic_grade_applicability": [
+            "Not applicable (no residual carcinoma or microinvasion only)",
+            "Nottingham Score",
+        ],
+        "glandular_tubular_differentiation": [
+            "Score 1 (greater than 75% of tumor area forming glandular / tubular structures)",
+            "Score 2 (10% to 75% of tumor area forming glandular / tubular structures)",
+            "Score 3 (less than 10% of tumor area forming glandular / tubular structures)",
+            "Score cannot be determined",
+        ],
+        "nuclear_pleomorphism": [
+            "Score 1 (Nuclei small with little increase in size in comparison with normal breast epithelial cells, regular outlines, uniform nuclear chromatin, little variation in size)",
+            "Score 2 (Cells larger than normal with open vesicular nuclei, visible nucleoli, and moderate variability in both size and shape)",
+            "Score 3 (Vesicular nuclei, often with prominent nucleoli, exhibiting marked variation in size and shape, occasionally with very large and bizarre forms)",
+            "Score cannot be determined",
+        ],
+        "mitotic_rate": [
+            "Score 1",
+            "Score 2",
+            "Score 3",
+            "Score cannot be determined",
+        ],
+        "overall_grade": [
+            "Grade 1 (scores of 3, 4 or 5)",
+            "Grade 2 (scores of 6 or 7)",
+            "Grade 3 (scores of 8 or 9)",
+            "Score cannot be determined",
+        ],
+        # ---------------------------------------------------------------------
+        # 5. LARGEST INVASIVE FOCUS IN THIS LIMITED BIOPSY SAMPLE
+        # ---------------------------------------------------------------------
+        "largest_invasive_focus_method": [
+            "Exact measurement in Millimeters (mm)",
+            "At least in Millimeters (mm)",
+            "Cannot be determined",
+        ],
+        # ---------------------------------------------------------------------
+        # 6. DUCTAL CARCINOMA IN SITU (DCIS)
+        # ---------------------------------------------------------------------
+        "dcis_status": [
+            "Not identified",
+            "Present",
+        ],
+        "architectural_pattern": [
+            "Comedo",
+            "Paget disease (DCIS involving nipple skin)",
+            "Cribriform",
+            "Micropapillary",
+            "Papillary",
+            "Solid",
+            "Other",
+        ],
+        "dcis_nuclear_grade": [
+            "Grade I (low)",
+            "Grade II (intermediate)",
+            "Grade III (high)",
+            "Other",
+            "Cannot be determined",
+        ],
+        "necrosis": [
+            "Not identified",
+            "Present, focal (small foci or single cell necrosis)",
+            "Present, central (expansive \"comedo\" necrosis)",
+            "Other",
+            "Cannot be determined",
+            "Cannot be excluded",
+        ],
+        # ---------------------------------------------------------------------
+        # 7. LYMPHATIC / VASCULAR INVASION
+        # ---------------------------------------------------------------------
+        "lymphatic_vascular_invasion": [
+            "Not identified",
+            "Present",
+            "Cannot be determined",
+        ],
+        # ---------------------------------------------------------------------
+        # 8. MICROCALCIFICATIONS
+        # ---------------------------------------------------------------------
+        "microcalcifications": [
+            "Not identified",
+            "Present in DCIS",
+            "Present in invasive carcinoma",
+            "Present in non-neoplastic tissue",
+            "Other",
+        ],
+        # ---------------------------------------------------------------------
+        # 9. ADDITIONAL FINDINGS / SPECIAL STUDIES / COMMENTS
+        # ---------------------------------------------------------------------
+        "additional_findings_status": [
+            "Present",
+            "Not identified",
+        ],
+        "breast_biomarker_studies_status": [
+            "Pending",
+            "Performed",
+            "Not performed",
+            "Unknown",
+        ],
+    }
+    # -------------------------------------------------------------------------
+    # Free-text / specify fields
+    # -------------------------------------------------------------------------
+    free_text_fields: list[str] = [
+        "procedure_other",
+        "tumor_site_other",
+        "distance_from_nipple_cm",
+        "histologic_type_features_specify",
+        "histologic_type_other",
+        "histologic_type_comment",
+        "largest_invasive_focus_exact_mm",
+        "largest_invasive_focus_at_least_mm",
+        "largest_invasive_focus_cannot_determine_explain",
+        "architectural_pattern_other",
+        "dcis_nuclear_grade_other",
+        "necrosis_other",
+        "microcalcifications_other",
+        "additional_findings_specify",
+        "breast_biomarker_studies_specify_pending",
+        "comments",
+    ]
 
     # Narrative-text mappings (Spanish + English) -> CAP values.
     narrative_patterns: dict[str, list[tuple[str, str]]] = {
@@ -152,7 +480,7 @@ class BreastProtocolExtractor:
         r"\bER\b", r"\bPR\b", r"HER2", r"Ki\-?67", r"biomarcadores?", r"receptores?\s+hormonales?"
     ]
 
-    def extract(self, text: str) -> ExtractedProtocol:
+    def extract(self, text: str) -> ExtractedInvasiveProtocol:
         normalized = self._normalize(text)
         has_checkboxes = self._has_checkbox_marks(normalized)
 
@@ -164,18 +492,35 @@ class BreastProtocolExtractor:
         if specify_clock_position and "Clock position" not in tumor_site:
             tumor_site.append("Clock position")
 
-        return ExtractedProtocol(
+        agent_result = extract_additional_findings_and_biomarkers(text)
+        additional_findings = self._extract_additional_findings(normalized)
+        biomarker_studies = self._extract_biomarker_mentions(normalized)
+
+        if agent_result.get("additional_findings"):
+            additional_findings = agent_result["additional_findings"]
+        if agent_result.get("biomarker_studies"):
+            biomarker_studies = agent_result["biomarker_studies"]
+        return ExtractedInvasiveProtocol(
             procedure=procedure or ["Not specified"],
             specimen_laterality=specimen_laterality or ["Not specified"],
             tumor_site=tumor_site or ["Not specified"],
-            specify_clock_position=specify_clock_position,
-            histologic_type=self._extract_field(normalized, "histologic_type", has_checkboxes),
+            specify_clock_position=specify_clock_position,            histologic_type=self._extract_field(normalized, "histologic_type", has_checkboxes),
+            histologic_grade_applicability=self._extract_field(normalized, "histologic_grade_applicability", has_checkboxes),
+            glandular_tubular_differentiation=self._extract_field(normalized, "glandular_tubular_differentiation", has_checkboxes),
+            nuclear_pleomorphism=self._extract_field(normalized, "nuclear_pleomorphism", has_checkboxes),
+            mitotic_rate=self._extract_field(normalized, "mitotic_rate", has_checkboxes),
+            overall_grade=self._extract_field(normalized, "overall_grade", has_checkboxes),
+            largest_invasive_focus_method=self._extract_field(normalized, "largest_invasive_focus_method", has_checkboxes),
+            dcis_status=self._extract_field(normalized, "dcis_status", has_checkboxes),
             architectural_pattern=self._extract_field(normalized, "architectural_pattern", has_checkboxes),
-            nuclear_grade=self._extract_field(normalized, "nuclear_grade", has_checkboxes) or ["Cannot be determined"],
-            necrosis=self._extract_field(normalized, "necrosis", has_checkboxes) or ["Cannot be determined"],
+            dcis_nuclear_grade=self._extract_field(normalized, "dcis_nuclear_grade", has_checkboxes),
+            necrosis=self._extract_field(normalized, "necrosis", has_checkboxes),
+            lymphatic_vascular_invasion=self._extract_field(normalized, "lymphatic_vascular_invasion", has_checkboxes),
             microcalcifications=self._extract_field(normalized, "microcalcifications", has_checkboxes),
-            additional_findings=self._extract_additional_findings(normalized),
-            biomarker_studies=self._extract_biomarker_mentions(normalized),
+            additional_findings_status=self._extract_field(normalized, "additional_findings_status", has_checkboxes),
+            breast_biomarker_studies_status=self._extract_field(normalized, "breast_biomarker_studies_status", has_checkboxes),
+            additional_findings=additional_findings,
+            biomarker_studies=biomarker_studies,
         )
 
     def _normalize(self, text: str) -> str:
@@ -246,10 +591,18 @@ def main() -> None:
     with open(args.input_file, "r", encoding="utf-8") as f:
         text = f.read()
 
-    extractor = BreastProtocolExtractor()
+    protocol_type = classify_report_type(text)
+    if protocol_type == "invasive":
+        extractor = BreastInvasiveProtocolExtractor()
+    else:
+        extractor = BreastProtocolExtractor()
     result = extractor.extract(text)
     print(json.dumps(asdict(result), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
