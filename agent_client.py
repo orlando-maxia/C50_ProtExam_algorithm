@@ -44,13 +44,19 @@ def extract_structured_report(report_text: str) -> dict[str, object]:
 
     client = OpenAI(api_key=api_key)
     system = (
-        "You are a pathology report extractor. Classify the report as either "
-        "standard (DCIS biopsy protocol) or invasive (invasive carcinoma biopsy protocol). "
+        "You are a pathology report extractor. The input report may be written in Spanish or English. "
+        "Classify the report as either standard (DCIS biopsy protocol) or invasive (invasive carcinoma biopsy protocol). "
         "Return STRICT JSON with keys: protocol_type and fields. "
         "protocol_type must be 'standard' or 'invasive'. "
         "fields must contain only the fields for that protocol and all values must be lists of strings, "
         "except for standard.additional_findings and standard.biomarker_studies which are strings or null. "
-        "If a field is not stated, use an empty list or null."
+        "If a field is not stated, use an empty list or null. "
+        "Important: map Spanish clinical/pathology terminology to the existing schema fields. "
+        "Do not leave fields empty when the concept is clearly stated using Spanish synonyms. "
+        "Pay special attention to these fields: procedure, specimen_laterality, tumor_site, histologic_type. "
+        "Examples of Spanish terms you must map: biopsia con aguja / puncion / aspiracion con aguja fina -> procedure; "
+        "mama derecha/izquierda -> specimen_laterality; cuadrante superior/inferior externo/interno, pezon, central -> tumor_site; "
+        "carcinoma ductal/lobulillar/cribriforme/mucinoso/papilar -> histologic_type."
     )
 
     response = client.responses.create(
@@ -77,3 +83,5 @@ def classify_report_type(report_text: str) -> Literal["standard", "invasive"]:
     if protocol_type == "invasive":
         return "invasive"
     return "standard"
+
+
