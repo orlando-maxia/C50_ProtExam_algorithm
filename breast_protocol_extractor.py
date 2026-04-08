@@ -174,8 +174,14 @@ def main() -> None:
         text = f.read()
 
     result = extract_report(text)
+    if isinstance(result, ExtractedInvasiveProtocol):
+        version_line = "ICB Protocol Examination - Version 1.2.0.0"
+    else:
+        version_line = "DCIS Protocol Examination - Version 1.0.1.0"
+    print(version_line)
     print(json.dumps(asdict(result), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     main()
+
