@@ -8,10 +8,97 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 import json
+import os
 import re
-from typing import Iterable
+from typing import Iterable, Literal
+from agent_client import classify_report_type, extract_additional_findings_and_biomarkers
 
 CHECKED_PATTERNS = [r"\[x\]", r"\[X\]", r"☒", r"☑", r"✅", r"\(x\)", r"\(X\)"]
+
+AGENT_API_KEY_PATH = r"C:\\Users\\orlando.caballero\\Downloads\\oaiak2"
+
+
+def _load_openai_api_key(api_key_path: str | None = None) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        return api_key
+
+    if not api_key_path:
+        raise FileNotFoundError("OPENAI_API_KEY not set and no api_key_path provided.")
+
+    candidate_paths = [api_key_path]
+    if re.match(r"^[A-Za-z]:\\", api_key_path):
+        drive = api_key_path[0].lower()
+        wsl_path = "/mnt/" + drive + "/" + api_key_path[3:].replace("\\\\", "/")
+        candidate_paths.append(wsl_path)
+
+    for path in candidate_paths:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                key = handle.read().strip()
+            if key:
+                return key
+        except OSError:
+            continue
+
+    raise FileNotFoundError("Could not read API key from the provided path(s).")
+
+
+def _response_output_text(response) -> str:
+    text = getattr(response, "output_text", None)
+    if text:
+        return text
+
+    output = getattr(response, "output", None)
+    if not output:
+        return ""
+
+    for item in output:
+        if getattr(item, "type", None) != "message":
+            continue
+        for part in getattr(item, "content", []) or []:
+            if getattr(part, "type", None) == "output_text":
+                return getattr(part, "text", "")
+
+    return ""
+
+
+class ProtocolSelectorAgent:
+    """LLM-based selector that chooses DCIS vs invasive protocol."""
+
+    def __init__(self, api_key_path: str | None = AGENT_API_KEY_PATH, model: str = "gpt-4.1") -> None:
+        from openai import OpenAI
+
+        api_key = _load_openai_api_key(api_key_path)
+        self._client = OpenAI(api_key=api_key)
+        self._model = model
+
+    def choose_protocol(self, text: str) -> Literal["dcis", "invasive"]:
+        system = (
+            "You are a pathology protocol router. Decide whether the report is for "
+            "DCIS biopsy protocol or invasive carcinoma biopsy protocol. "
+            "Return only one token: dcis or invasive."
+        )
+        clipped = text[:8000]
+        response = self._client.responses.create(
+            model=self._model,
+            input=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": clipped},
+            ],
+        )
+        choice = _response_output_text(response).strip().lower()
+        if "invasive" in choice:
+            return "invasive"
+        return "dcis"
+
+
+def select_extractor_with_agent(text: str, agent: ProtocolSelectorAgent | None = None):
+    agent = agent or ProtocolSelectorAgent()
+    protocol = agent.choose_protocol(text)
+    if protocol == "invasive":
+        return BreastInvasiveProtocolExtractor()
+    return BreastProtocolExtractor()
 
 
 @dataclass
@@ -405,6 +492,14 @@ class BreastInvasiveProtocolExtractor:
         if specify_clock_position and "Clock position" not in tumor_site:
             tumor_site.append("Clock position")
 
+        agent_result = extract_additional_findings_and_biomarkers(text)
+        additional_findings = self._extract_additional_findings(normalized)
+        biomarker_studies = self._extract_biomarker_mentions(normalized)
+
+        if agent_result.get("additional_findings"):
+            additional_findings = agent_result["additional_findings"]
+        if agent_result.get("biomarker_studies"):
+            biomarker_studies = agent_result["biomarker_studies"]
         return ExtractedInvasiveProtocol(
             procedure=procedure or ["Not specified"],
             specimen_laterality=specimen_laterality or ["Not specified"],
@@ -424,8 +519,8 @@ class BreastInvasiveProtocolExtractor:
             microcalcifications=self._extract_field(normalized, "microcalcifications", has_checkboxes),
             additional_findings_status=self._extract_field(normalized, "additional_findings_status", has_checkboxes),
             breast_biomarker_studies_status=self._extract_field(normalized, "breast_biomarker_studies_status", has_checkboxes),
-            additional_findings=self._extract_additional_findings(normalized),
-            biomarker_studies=self._extract_biomarker_mentions(normalized),
+            additional_findings=additional_findings,
+            biomarker_studies=biomarker_studies,
         )
 
     def _normalize(self, text: str) -> str:
@@ -496,11 +591,18 @@ def main() -> None:
     with open(args.input_file, "r", encoding="utf-8") as f:
         text = f.read()
 
-    extractor = BreastProtocolExtractor()
+    protocol_type = classify_report_type(text)
+    if protocol_type == "invasive":
+        extractor = BreastInvasiveProtocolExtractor()
+    else:
+        extractor = BreastProtocolExtractor()
     result = extractor.extract(text)
     print(json.dumps(asdict(result), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
     main()
+
+
+
 
