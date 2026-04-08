@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Literal
 
 
@@ -38,33 +37,20 @@ def _response_output_text(response) -> str:
     return ""
 
 
-def classify_report_type(report_text: str) -> Literal["standard", "invasive"]:
-    """
-    Classify report text into protocol type.
-
-    Returns:
-        "standard" for DCIS protocol or "invasive" for invasive protocol.
-    """
-    api_key = _read_api_key()
-
-    # TODO: Call external agent API with api_key and report_text.
-    # TODO: Replace placeholder logic with real API response parsing.
-
-    _ = report_text  # placeholder to silence unused variable warnings
-    _ = api_key
-    return "standard"
-
-
-def extract_additional_findings_and_biomarkers(report_text: str) -> dict[str, list[str]]:
+def extract_structured_report(report_text: str) -> dict[str, object]:
     api_key = _read_api_key()
 
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
     system = (
-        "Extract additional findings and biomarker studies from the pathology report. "
-        "Return strict JSON with keys: additional_findings (list of strings) and "
-        "biomarker_studies (list of strings). If none, return empty lists."
+        "You are a pathology report extractor. Classify the report as either "
+        "standard (DCIS biopsy protocol) or invasive (invasive carcinoma biopsy protocol). "
+        "Return STRICT JSON with keys: protocol_type and fields. "
+        "protocol_type must be 'standard' or 'invasive'. "
+        "fields must contain only the fields for that protocol and all values must be lists of strings, "
+        "except for standard.additional_findings and standard.biomarker_studies which are strings or null. "
+        "If a field is not stated, use an empty list or null."
     )
 
     response = client.responses.create(
@@ -76,20 +62,18 @@ def extract_additional_findings_and_biomarkers(report_text: str) -> dict[str, li
     )
 
     raw = _response_output_text(response).strip()
+    if not raw:
+        return {}
+
     try:
-        data = json.loads(raw) if raw else {}
+        return json.loads(raw)
     except json.JSONDecodeError:
-        return {"additional_findings": [], "biomarker_studies": []}
+        return {}
 
-    additional_findings = data.get("additional_findings") or []
-    biomarker_studies = data.get("biomarker_studies") or []
 
-    if not isinstance(additional_findings, list):
-        additional_findings = []
-    if not isinstance(biomarker_studies, list):
-        biomarker_studies = []
-
-    return {
-        "additional_findings": [str(x) for x in additional_findings if str(x).strip()],
-        "biomarker_studies": [str(x) for x in biomarker_studies if str(x).strip()],
-    }
+def classify_report_type(report_text: str) -> Literal["standard", "invasive"]:
+    payload = extract_structured_report(report_text)
+    protocol_type = payload.get("protocol_type")
+    if protocol_type == "invasive":
+        return "invasive"
+    return "standard"
